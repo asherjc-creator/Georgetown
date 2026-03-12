@@ -1,260 +1,199 @@
-import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-import folium
-from folium.plugins import HeatMap
-from streamlit_folium import st_folium
-from datetime import timedelta, datetime
-from PIL import Image
-import base64
-from io import BytesIO
+from dash import Dash, dcc, html, Input, Output
+import dash_bootstrap_components as dbc
 
-# --------------------------------------------------
-# 1. CORE LOGIC (Integrated for reliability)
-# --------------------------------------------------
-
-def dynamic_pricing_logic(occupancy, market_adr, event_multiplier=1):
-    """Calculates suggested ADR based on occupancy levels."""
-    if occupancy > 0.90:
-        price = market_adr * 1.20
-    elif occupancy > 0.80:
-        price = market_adr * 1.10
-    elif occupancy > 0.70:
-        price = market_adr * 1.05
-    else:
-        price = market_adr * 0.95
-    return price * event_multiplier
-
-# --------------------------------------------------
-# 2. PAGE CONFIG & STYLING
-# --------------------------------------------------
-
-st.set_page_config(
-    page_title="Georgetown Inn Revenue Portal",
-    layout="wide",
-    page_icon="🏨"
-)
-
-st.markdown("""
-<style>
-.main {background-color:#f5f7f9;}
-.stMetric {
-    background: white;
-    padding: 15px;
-    border-radius: 10px;
-    box-shadow: 2px 2px 5px rgba(0,0,0,0.05);
-}
-.event-card {
-    padding: 10px;
-    border-left: 5px solid #ff4b4b;
-    background: white;
-    margin-bottom: 8px;
-    font-size: 0.9rem;
-}
-</style>
-""", unsafe_allow_html=True)
-
-# --------------------------------------------------
-# 3. HELPER FUNCTIONS
-# --------------------------------------------------
-
-def get_image_base64(image_path):
-    try:
-        img = Image.open(image_path)
-        buffered = BytesIO()
-        img.save(buffered, format="PNG")
-        return f"data:image/png;base64,{base64.b64encode(buffered.getvalue()).decode()}"
-    except:
-        return ""
-
-# --------------------------------------------------
-# 4. DATA LOADING & CLEANING
-# --------------------------------------------------
-
-@st.cache_data
+# ======================
+# 1. Load and Clean Data
+# ======================
 def load_data():
-    # Load Internal Data
-    df = pd.read_csv("georgetown_inn_data.csv")
-    df.columns = df.columns.str.strip()
-    df["Date"] = pd.to_datetime(df["Date"])
-    
-    # Core hotel metrics
-    df["ADR"] = df["Room_Revenue"] / df["Rooms_Sold"]
-    df["Occupancy"] = df["Rooms_Sold"] / df["Total_Rooms"]
-    df["RevPAR"] = df["Room_Revenue"] / df["Total_Rooms"]
-    df["MPI"] = (df["Occupancy"] / df["Market_Occ"]) * 100
-    df["RGI"] = (df["RevPAR"] / (df["Market_ADR"] * df["Market_Occ"])) * 100
-
-    # Load & Clean Competitor Data (Handles duplicate header strings)
-    comp = pd.read_csv("competitor_rates.csv")
-    comp = comp[comp["Date"].str.contains("/") == True] # Keep only rows with real dates
-    comp["Date"] = pd.to_datetime(comp["Date"])
-    comp["Rate"] = pd.to_numeric(comp["Rate"], errors='coerce')
-
-    # Load & Clean Events
-    try:
-        events = pd.read_csv("events_dc.csv")
-        events["Date"] = pd.to_datetime(events["Date"])
-    except:
-        # Fallback if file is missing
-        events = pd.DataFrame([
-            {"Date": pd.to_datetime("2026-03-20"), "Event": "Cherry Blossom Peak", "Impact_Level": "High"},
-            {"Date": pd.to_datetime("2026-07-04"), "Event": "Independence Day", "Impact_Level": "High"}
-        ])
-
-    return df, comp, events
-
-df, comp, events = load_data()
-
-# --------------------------------------------------
-# 5. SIDEBAR & DATE FILTERING (Fixed TypeError)
-# --------------------------------------------------
-
-with st.sidebar:
-    profile = get_image_base64("asher_picture.png")
-    if profile:
-        st.markdown(f'<img src="{profile}" style="border-radius:50%;width:120px;display:block;margin:auto;">', unsafe_allow_html=True)
-    
-    st.markdown("<h3 style='text-align:center;'>Asher Jannu</h3>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align:center;'>Revenue Analyst</p>", unsafe_allow_html=True)
-    st.markdown("---")
-
-    # Handling the Streamlit Date Input safely
-    try:
-        date_range = st.date_input(
-            "Select Analysis Range",
-            [df["Date"].min().date(), df["Date"].max().date()]
-        )
-        
-        if isinstance(date_range, list) and len(date_range) == 2:
-            start_date, end_date = date_range
+    years = [2022, 2023, 2024, 2025]
+    dfs = []
+    for yr in years:
+        df = pd.read_csv(f'ECONO - {yr}.csv')
+        # Parse dates (2025 uses %y, others %Y)
+        if yr == 2025:
+            df['IDS_DATE'] = pd.to_datetime(df['IDS_DATE'], format='%m/%d/%y')
         else:
-            # Fallback if only one date is clicked or range is incomplete
-            start_date = end_date = date_range[0] if isinstance(date_range, list) else date_range
-    except Exception:
-        start_date = df["Date"].min().date()
-        end_date = df["Date"].max().date()
+            df['IDS_DATE'] = pd.to_datetime(df['IDS_DATE'], format='%m/%d/%Y')
+        df['Year'] = yr
+        # Clean numeric columns
+        df['RoomRev'] = df['RoomRev'].astype(str).str.replace(',', '').astype(float)
+        df['OccPercent'] = df['OccPercent'].astype(str).str.rstrip('%').astype(float)
+        dfs.append(df)
+    data = pd.concat(dfs, ignore_index=True)
+    data['Month'] = data['IDS_DATE'].dt.month
+    data['MonthName'] = data['IDS_DATE'].dt.strftime('%b')
+    return data
 
-# Apply filters (Comparing date objects to date objects)
-filtered = df[(df["Date"].dt.date >= start_date) & (df["Date"].dt.date <= end_date)].copy()
-comp_filtered = comp[(comp["Date"].dt.date >= start_date) & (comp["Date"].dt.date <= end_date)]
+df = load_data()
 
-# --------------------------------------------------
-# 6. HEADER & KPIs
-# --------------------------------------------------
+# ======================
+# 2. Compute Yearly KPIs
+# ======================
+yearly = df.groupby('Year').agg(
+    TotalRevenue=('RoomRev', 'sum'),
+    AvgOcc=('OccPercent', 'mean'),
+    AvgADR=('ADR', 'mean'),
+    AvgRevPAR=('RevPAR', 'mean')
+).round(2).reset_index()
 
-logo = get_image_base64("logo.png")
-if logo:
-    st.markdown(f'<div style="display:flex;align-items:center;gap:20px;"><img src="{logo}" width="100"><h1>Georgetown Inn Revenue</h1></div>', unsafe_allow_html=True)
-else:
-    st.title("🏨 Georgetown Inn Revenue Dashboard")
+# ======================
+# 3. Monthly Aggregates
+# ======================
+monthly = df.groupby(['Year', 'Month', 'MonthName'])['RoomRev'].sum().reset_index()
+month_order = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+monthly['MonthName'] = pd.Categorical(monthly['MonthName'], categories=month_order, ordered=True)
 
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Avg ADR", f"${filtered['ADR'].mean():.2f}")
-c2.metric("Occupancy", f"{filtered['Occupancy'].mean()*100:.1f}%")
-c3.metric("RevPAR", f"${filtered['RevPAR'].mean():.2f}")
-c4.metric("RGI (Market Share)", f"{filtered['RGI'].mean():.1f}")
+# ======================
+# 4. Occupancy vs ADR Scatter
+# ======================
+scatter_df = df.groupby(['Year', 'MonthName']).agg(
+    AvgOcc=('OccPercent', 'mean'),
+    AvgADR=('ADR', 'mean')
+).reset_index()
 
-st.markdown("---")
+# ======================
+# 5. Build Dash App
+# ======================
+app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 
-# --------------------------------------------------
-# 7. VISUAL ANALYTICS
-# --------------------------------------------------
+app.layout = dbc.Container([
+    html.H1("🏨 Hotel Performance Dashboard (2022–2025)", className="text-center my-4"),
 
-row1_col1, row1_col2 = st.columns(2)
+    # KPI Cards
+    dbc.Row([
+        dbc.Col(dbc.Card([
+            dbc.CardBody([
+                html.H4("Total Revenue", className="card-title"),
+                html.H2(f"${yearly['TotalRevenue'].sum():,.0f}", className="card-text text-primary")
+            ])
+        ]), width=3),
+        dbc.Col(dbc.Card([
+            dbc.CardBody([
+                html.H4("Avg Occupancy", className="card-title"),
+                html.H2(f"{yearly['AvgOcc'].mean():.1f}%", className="card-text text-success")
+            ])
+        ]), width=3),
+        dbc.Col(dbc.Card([
+            dbc.CardBody([
+                html.H4("Avg ADR", className="card-title"),
+                html.H2(f"${yearly['AvgADR'].mean():.2f}", className="card-text text-info")
+            ])
+        ]), width=3),
+        dbc.Col(dbc.Card([
+            dbc.CardBody([
+                html.H4("Avg RevPAR", className="card-title"),
+                html.H2(f"${yearly['AvgRevPAR'].mean():.2f}", className="card-text text-warning")
+            ])
+        ]), width=3),
+    ], className="mb-4"),
 
-with row1_col1:
-    st.subheader("📊 Booking Pickup & Revenue")
-    filtered["Pickup"] = filtered["Rooms_Sold"].diff().fillna(0)
-    fig_rev = px.line(filtered, x="Date", y=["Room_Revenue", "RevPAR"], title="Revenue Trends")
-    st.plotly_chart(fig_rev, use_container_width=True)
+    # Yearly Bar Charts
+    dbc.Row([
+        dbc.Col(dcc.Graph(id='revenue-bar'), width=6),
+        dbc.Col(dcc.Graph(id='occ-bar'), width=6),
+    ]),
+    dbc.Row([
+        dbc.Col(dcc.Graph(id='adr-bar'), width=6),
+        dbc.Col(dcc.Graph(id='revpar-bar'), width=6),
+    ]),
 
-with row1_col2:
-    st.subheader("📈 Market Benchmarking (MPI/RGI)")
-    fig_bench = px.line(filtered, x="Date", y=["MPI", "RGI"], title="Index Performance (100 = Fair Share)")
-    fig_bench.add_hline(y=100, line_dash="dash", line_color="red")
-    st.plotly_chart(fig_bench, use_container_width=True)
+    html.Hr(),
 
-row2_col1, row2_col2 = st.columns(2)
+    # Monthly Revenue Comparison
+    html.H3("📅 Monthly Revenue Comparison", className="mt-4"),
+    dbc.Row([
+        dbc.Col([
+            html.Label("Select Years:"),
+            dcc.Dropdown(
+                id='year-selector',
+                options=[{'label': str(y), 'value': y} for y in [2022,2023,2024,2025]],
+                value=[2024,2025],
+                multi=True,
+                clearable=False
+            )
+        ], width=4),
+    ]),
+    dbc.Row([
+        dbc.Col(dcc.Graph(id='monthly-revenue-line'), width=12),
+    ]),
 
-with row2_col1:
-    st.subheader("📅 Rate Demand Heatmap")
-    df["Weekday"] = df["Date"].dt.day_name()
-    df["Week"] = df["Date"].dt.isocalendar().week
-    pivot = df.pivot_table(index="Weekday", columns="Week", values="ADR")
-    # Sort weekdays correctly
-    days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-    pivot = pivot.reindex(days)
-    fig_heat = px.imshow(pivot, color_continuous_scale="Viridis")
-    st.plotly_chart(fig_heat, use_container_width=True)
+    # Occupancy vs ADR Scatter
+    html.H3("📊 Occupancy vs ADR by Month", className="mt-4"),
+    dbc.Row([
+        dbc.Col(dcc.Graph(id='occ-adr-scatter'), width=12),
+    ]),
 
-with row2_col2:
-    st.subheader("🏢 Competitor Rate Position")
-    fig_comp = px.line(comp_filtered, x="Date", y="Rate", color="Hotel")
-    st.plotly_chart(fig_comp, use_container_width=True)
+    # OTA Share Note
+    dbc.Row([
+        dbc.Col(html.Div(
+            "ℹ️ Note: OTA share is approximately 84% (based on user input). Focus on direct booking strategies to reduce commission costs.",
+            className="alert alert-info"
+        ), width=12),
+    ]),
 
-# --------------------------------------------------
-# 8. AI FORECAST & PRICING
-# --------------------------------------------------
+], fluid=True)
 
-st.markdown("---")
-f_col1, f_col2 = st.columns([2, 1])
+# ======================
+# Callbacks
+# ======================
+@app.callback(
+    Output('revenue-bar', 'figure'),
+    Output('occ-bar', 'figure'),
+    Output('adr-bar', 'figure'),
+    Output('revpar-bar', 'figure'),
+    Input('year-selector', 'value')  # dummy trigger to keep charts static but interactive
+)
+def update_yearly_charts(_):
+    # Revenue bar
+    fig_rev = px.bar(yearly, x='Year', y='TotalRevenue', title='Total Revenue by Year',
+                     labels={'TotalRevenue': 'Revenue ($)'}, text_auto='.2s')
+    fig_rev.update_traces(marker_color='#2E86AB')
 
-with f_col1:
-    st.subheader("🔮 90-Day ADR Forecast")
-    last_date = df["Date"].max()
-    future_dates = pd.date_range(last_date + timedelta(days=1), periods=90)
-    
-    # Calculate baseline using new .ffill() syntax
-    avg_market_base = comp.groupby("Date")["Rate"].mean()
-    forecast_df = pd.DataFrame({"Date": future_dates})
-    forecast_df["Market_Trend"] = avg_market_base.reindex(future_dates).ffill().values
-    
-    # Apply Multipliers
-    forecast_df = forecast_df.merge(events, on="Date", how="left")
-    forecast_df["Impact_Level"] = forecast_df["Impact_Level"].fillna("None")
-    mults = {"High": 1.25, "Medium": 1.1, "Low": 1.05, "None": 1.0}
-    forecast_df["Predicted_ADR"] = forecast_df.apply(lambda x: x["Market_Trend"] * mults[x["Impact_Level"]], axis=1)
+    # Occupancy bar
+    fig_occ = px.bar(yearly, x='Year', y='AvgOcc', title='Average Occupancy by Year',
+                     labels={'AvgOcc': 'Occupancy (%)'}, text_auto='.1f')
+    fig_occ.update_traces(marker_color='#A23B72')
 
-    fig_forecast = go.Figure()
-    fig_forecast.add_trace(go.Scatter(x=forecast_df["Date"], y=forecast_df["Predicted_ADR"], name="Predicted ADR", line=dict(color='green', width=3)))
-    fig_forecast.add_trace(go.Scatter(x=forecast_df["Date"], y=forecast_df["Market_Trend"], name="Market Baseline", line=dict(dash='dash', color='gray')))
-    st.plotly_chart(fig_forecast, use_container_width=True)
+    # ADR bar
+    fig_adr = px.bar(yearly, x='Year', y='AvgADR', title='Average Daily Rate (ADR) by Year',
+                     labels={'AvgADR': 'ADR ($)'}, text_auto='.2f')
+    fig_adr.update_traces(marker_color='#F18F01')
 
-with f_col2:
-    st.subheader("🤖 AI Pricing Engine")
-    latest_occ = df["Occupancy"].iloc[-1]
-    latest_m_adr = df["Market_ADR"].iloc[-1]
-    rec_adr = dynamic_pricing_logic(latest_occ, latest_m_adr)
-    
-    st.metric("Recommended ADR", f"${rec_adr:.0f}", delta=f"${rec_adr - df['ADR'].iloc[-1]:.2f} vs Last Actual")
-    
-    st.write("**Upcoming High Impact Events**")
-    upcoming = events[events["Date"] >= datetime.now()].sort_values("Date").head(3)
-    for _, row in upcoming.iterrows():
-        st.markdown(f'<div class="event-card"><b>{row["Date"].strftime("%b %d")}</b>: {row["Event"]} ({row["Impact_Level"]} Impact)</div>', unsafe_allow_html=True)
+    # RevPAR bar
+    fig_revpar = px.bar(yearly, x='Year', y='AvgRevPAR', title='Revenue per Available Room (RevPAR) by Year',
+                        labels={'AvgRevPAR': 'RevPAR ($)'}, text_auto='.2f')
+    fig_revpar.update_traces(marker_color='#C73E1D')
 
-# --------------------------------------------------
-# 9. MAPS
-# --------------------------------------------------
+    return fig_rev, fig_occ, fig_adr, fig_revpar
 
-st.markdown("---")
-st.subheader("📍 Geographic Demand & Competition")
-m_col1, m_col2 = st.columns(2)
+@app.callback(
+    Output('monthly-revenue-line', 'figure'),
+    Input('year-selector', 'value')
+)
+def update_monthly_chart(selected_years):
+    filtered = monthly[monthly['Year'].isin(selected_years)]
+    fig = px.line(filtered, x='MonthName', y='RoomRev', color='Year', markers=True,
+                  title='Monthly Revenue', labels={'RoomRev': 'Revenue ($)', 'MonthName': ''})
+    fig.update_layout(xaxis={'categoryorder':'array', 'categoryarray':month_order})
+    return fig
 
-with m_col1:
-    m = folium.Map(location=[38.9055, -77.0620], zoom_start=14)
-    folium.Marker([38.9055, -77.0620], popup="Georgetown Inn", icon=folium.Icon(color="blue", icon="home")).add_to(m)
-    # Add comps
-    comps = [("Four Seasons", [38.9052, -77.0581]), ("Rosewood", [38.9045, -77.0625])]
-    for n, l in comps:
-        folium.Marker(l, popup=n, icon=folium.Icon(color="red")).add_to(m)
-    st_folium(m, width="100%", height=400)
+@app.callback(
+    Output('occ-adr-scatter', 'figure'),
+    Input('year-selector', 'value')
+)
+def update_scatter(_):
+    fig = px.scatter(scatter_df, x='AvgOcc', y='AvgADR', color='Year', hover_data=['MonthName'],
+                     title='Occupancy vs ADR by Month',
+                     labels={'AvgOcc': 'Occupancy (%)', 'AvgADR': 'ADR ($)'})
+    fig.add_hline(y=yearly['AvgADR'].mean(), line_dash="dash", line_color="grey",
+                  annotation_text=f"Avg ADR {yearly['AvgADR'].mean():.2f}")
+    fig.add_vline(x=yearly['AvgOcc'].mean(), line_dash="dash", line_color="grey",
+                  annotation_text=f"Avg Occ {yearly['AvgOcc'].mean():.1f}%")
+    return fig
 
-with m_col2:
-    m_heat = folium.Map(location=[38.9055, -77.0620], zoom_start=4)
-    heat_data = df[["Lat", "Lon"]].dropna().values.tolist()
-    HeatMap(heat_data).add_to(m_heat)
-    st_folium(m_heat, width="100%", height=400)
+if __name__ == '__main__':
+    app.run_server(debug=True)

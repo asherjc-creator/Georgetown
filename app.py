@@ -21,43 +21,32 @@ def load_and_process_data():
     for yr, file in files.items():
         try:
             temp_df = pd.read_csv(file)
-            # Standardize Dates
             fmt = '%m/%d/%y' if yr == 2025 else '%m/%d/%Y'
             temp_df['IDS_DATE'] = pd.to_datetime(temp_df['IDS_DATE'], format=fmt, errors='coerce')
             temp_df['Year'] = yr
             
-            # Numeric Cleaning (Removing commas and percentage signs)
             for col in ['RoomRev', 'OccPercent', 'ADR', 'RevPAR']:
                 if col in temp_df.columns and temp_df[col].dtype == object:
                     temp_df[col] = temp_df[col].astype(str).str.replace(',', '').str.replace('%', '').astype(float)
-            
             all_dfs.append(temp_df)
         except Exception as e:
-            print(f"Skipping {file} due to error: {e}")
+            print(f"File error {file}: {e}")
 
     df = pd.concat(all_dfs, ignore_index=True).dropna(subset=['IDS_DATE'])
     df['Month'] = df['IDS_DATE'].dt.month
     df['MonthName'] = df['IDS_DATE'].dt.strftime('%b')
     df['DayOfWeek'] = df['IDS_DATE'].dt.dayofweek
     
-    # --- GOPPAR CALCULATION (Arlington Benchmarks) ---
+    # GOPPAR Logic (Arlington Benchmarks)
     TOTAL_ROOMS = 47
-    CPOR = 32.00  # Cost Per Occupied Room (Cleaning, utilities)
-    FIXED_MONTHLY_OPEX = 38000  # Staff, Rent, Taxes
-    
-    df['Daily_Fixed_Cost'] = (FIXED_MONTHLY_OPEX * 12) / 365
-    df['Total_Opex'] = (df['Occupied'] * CPOR) + df['Daily_Fixed_Cost']
-    df['GOP'] = df['RoomRev'] - df['Total_Opex']
+    CPOR, FIXED_MONTHLY = 32.00, 38000
+    df['GOP'] = df['RoomRev'] - ((df['Occupied'] * CPOR) + ((FIXED_MONTHLY * 12) / 365))
     df['GOPPAR'] = df['GOP'] / TOTAL_ROOMS
     
-    # --- PREDICTIVE REGRESSION (Demand Analysis) ---
-    # Training the model on 2022-2024 data to predict 2025 expectations
+    # Predictive Regression
     train_df = df[df['Year'] < 2025].copy()
     if not train_df.empty:
-        model = LinearRegression()
-        X = train_df[['Month', 'DayOfWeek']]
-        y = train_df['Occupied']
-        model.fit(X, y)
+        model = LinearRegression().fit(train_df[['Month', 'DayOfWeek']], train_df['Occupied'])
         df['Predicted_Occupancy'] = model.predict(df[['Month', 'DayOfWeek']])
     
     return df
@@ -65,106 +54,63 @@ def load_and_process_data():
 df = load_and_process_data()
 
 # ==========================================
-# 2. DASHBOARD LAYOUT (UI)
+# 2. DASHBOARD LAYOUT
 # ==========================================
 app = Dash(__name__, external_stylesheets=[dbc.themes.FLATLY])
+server = app.server # Required for cloud deployment
 
 app.layout = dbc.Container([
-    html.Header([
-        html.H1("🏨 Arlington Hotel: Performance & Predictive Analysis", className="text-primary mt-4"),
-        html.P("47-Room Inventory | GOPPAR & Demand Forecasting", className="lead"),
+    html.Div([
+        html.H1("🏨 Arlington Hotel Performance", className="text-primary mt-4"),
+        html.P("47-Room Inventory | GOPPAR & Predictive Demand", className="lead"),
     ], className="text-center mb-5"),
 
-    # KPI TOP ROW
     dbc.Row([
-        dbc.Col(dbc.Card([
-            dbc.CardHeader("Cumulative GOP"),
-            dbc.CardBody([html.H3(f"${df['GOP'].sum():,.0f}", className="text-success")])
-        ]), width=3),
-        dbc.Col(dbc.Card([
-            dbc.CardHeader("Avg GOPPAR"),
-            dbc.CardBody([html.H3(f"${df['GOPPAR'].mean():.2f}", className="text-info")])
-        ]), width=3),
-        dbc.Col(dbc.Card([
-            dbc.CardHeader("Historical Avg Demand"),
-            dbc.CardBody([html.H3(f"{df['Occupied'].mean():.1f} Rooms", className="text-warning")])
-        ]), width=3),
-        dbc.Col(dbc.Card([
-            dbc.CardHeader("Efficiency Score"),
-            dbc.CardBody([html.H3(f"{(df['Occupied'].sum()/df['Rooms'].sum()*100):.1f}%", className="text-danger")])
-        ]), width=3),
+        dbc.Col(dbc.Card([dbc.CardHeader("Cumulative GOP"), dbc.CardBody([html.H3(f"${df['GOP'].sum():,.0f}", className="text-success")])]), width=3),
+        dbc.Col(dbc.Card([dbc.CardHeader("Avg GOPPAR"), dbc.CardBody([html.H3(f"${df['GOPPAR'].mean():.2f}", className="text-info")])]), width=3),
+        dbc.Col(dbc.Card([dbc.CardHeader("Historical Demand"), dbc.CardBody([html.H3(f"{df['Occupied'].mean():.1f} Rms", className="text-warning")])]), width=3),
+        dbc.Col(dbc.Card([dbc.CardHeader("Efficiency"), dbc.CardBody([html.H3(f"{(df['Occupied'].sum()/df['Rooms'].sum()*100):.1f}%", className="text-danger")])]), width=3),
     ], className="mb-4"),
 
-    # ANALYSIS ROW
     dbc.Row([
-        dbc.Col([
-            html.H5("Profitability Index (GOPPAR by Month)"),
-            dcc.Graph(id='goppar-chart')
-        ], width=6),
-        dbc.Col([
-            html.H5("Regression: Actual vs. Predictive Demand"),
-            dcc.Graph(id='predictive-chart')
-        ], width=6),
+        dbc.Col([html.H5("Monthly GOPPAR Trend"), dcc.Graph(id='goppar-chart')], width=6),
+        dbc.Col([html.H5("Actual vs Predicted Demand"), dcc.Graph(id='predictive-chart')], width=6),
     ], className="mb-4"),
 
-    # FULL WIDTH SUPPLY VS DEMAND
-    dbc.Row([
-        dbc.Col([
-            html.H5("Supply vs. Demand Availability (Unsold Inventory)"),
-            dcc.Graph(id='supply-demand-chart')
-        ], width=12),
-    ]),
+    dbc.Row([dbc.Col([html.H5("Supply (47) vs. Demand Sold"), dcc.Graph(id='supply-demand-chart')], width=12)]),
 
-    # INTERACTIVE CONTROLS
-    dbc.Row([
-        dbc.Col([
-            html.Label("Switch Analysis Year:"),
-            dcc.Dropdown(
-                id='year-dropdown',
-                options=[{'label': str(y), 'value': y} for y in [2022, 2023, 2024, 2025]],
-                value=2025,
-                clearable=False
-            )
-        ], width=3),
-    ], className="mt-4 mb-5 p-4 bg-light rounded"),
-
+    html.Div([
+        html.Label("Year Select:"),
+        dcc.Dropdown(id='year-dropdown', options=[{'label': str(y), 'value': y} for y in [2022, 2023, 2024, 2025]], value=2025, clearable=False)
+    ], className="mt-4 mb-5 p-3 bg-light"),
 ], fluid=True)
 
 # ==========================================
-# 3. CHART CALLBACKS
+# 3. CALLBACKS & LAUNCH FIX
 # ==========================================
 @app.callback(
-    [Output('goppar-chart', 'figure'),
-     Output('predictive-chart', 'figure'),
-     Output('supply-demand-chart', 'figure')],
+    [Output('goppar-chart', 'figure'), Output('predictive-chart', 'figure'), Output('supply-demand-chart', 'figure')],
     [Input('year-dropdown', 'value')]
 )
 def update_charts(selected_year):
-    filtered_df = df[df['Year'] == selected_year].copy()
-    month_order = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+    f_df = df[df['Year'] == selected_year].copy()
+    m_order = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
     
-    # 1. GOPPAR
-    monthly_gop = filtered_df.groupby('MonthName')['GOPPAR'].mean().reset_index()
-    monthly_gop['MonthName'] = pd.Categorical(monthly_gop['MonthName'], categories=month_order, ordered=True)
-    monthly_gop = monthly_gop.sort_values('MonthName')
-    fig_gop = px.bar(monthly_gop, x='MonthName', y='GOPPAR', color='GOPPAR', color_continuous_scale='GnBu')
+    g_df = f_df.groupby('MonthName')['GOPPAR'].mean().reset_index()
+    g_df['MonthName'] = pd.Categorical(g_df['MonthName'], categories=m_order, ordered=True)
+    fig_gop = px.bar(g_df.sort_values('MonthName'), x='MonthName', y='GOPPAR', color='GOPPAR', color_continuous_scale='GnBu')
 
-    # 2. Predictive Line
     fig_pred = go.Figure()
-    fig_pred.add_trace(go.Scatter(x=filtered_df['IDS_DATE'], y=filtered_df['Occupied'], name='Actual Occupied', line=dict(color='#2c3e50')))
-    fig_pred.add_trace(go.Scatter(x=filtered_df['IDS_DATE'], y=filtered_df['Predicted_Occupancy'], name='Model Prediction', line=dict(color='#e74c3c', dash='dash')))
-    fig_pred.update_layout(xaxis_title="Timeline", yaxis_title="Rooms")
+    fig_pred.add_trace(go.Scatter(x=f_df['IDS_DATE'], y=f_df['Occupied'], name='Actual', line=dict(color='#2c3e50')))
+    fig_pred.add_trace(go.Scatter(x=f_df['IDS_DATE'], y=f_df['Predicted_Occupancy'], name='Model', line=dict(color='#e74c3c', dash='dash')))
 
-    # 3. Supply vs Demand
     fig_supply = go.Figure()
-    fig_supply.add_trace(go.Scatter(x=filtered_df['IDS_DATE'], y=[47]*len(filtered_df), name='Total Supply (47)', fill='tonexty', line=dict(color='lightgray')))
-    fig_supply.add_trace(go.Scatter(x=filtered_df['IDS_DATE'], y=filtered_df['Occupied'], name='Inventory Sold', fill='tozeroy', line=dict(color='#18bc9c')))
-    fig_supply.update_layout(yaxis_range=[0, 50], showlegend=True)
+    fig_supply.add_trace(go.Scatter(x=f_df['IDS_DATE'], y=[47]*len(f_df), name='Supply', fill='tonexty', line=dict(color='lightgray')))
+    fig_supply.add_trace(go.Scatter(x=f_df['IDS_DATE'], y=f_df['Occupied'], name='Sold', fill='tozeroy', line=dict(color='#18bc9c')))
+    fig_supply.update_layout(yaxis_range=[0, 50])
 
     return fig_gop, fig_pred, fig_supply
 
-# ==========================================
-# 4. SERVER LAUNCH (Fixed for Dash 2.11+)
-# ==========================================
 if __name__ == '__main__':
-    app.run(debug=True)
+    # CRITICAL: Disable reloader and debug to avoid Signal Errors on Streamlit Cloud
+    app.run(host='0.0.0.0', port=8050, debug=False, use_reloader=False)

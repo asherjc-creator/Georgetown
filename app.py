@@ -6,9 +6,10 @@ import plotly.graph_objects as go
 import folium
 from streamlit_folium import st_folium
 from folium.plugins import HeatMap
-from datetime import datetime, timedelta
-import requests
-from bs4 import BeautifulSoup
+from datetime import timedelta
+import base64
+from io import BytesIO
+from PIL import Image
 
 # --------------------------------------------------
 # PAGE CONFIG
@@ -16,343 +17,283 @@ from bs4 import BeautifulSoup
 
 st.set_page_config(
     page_title="Georgetown Inn Revenue Portal",
-    page_icon="🏨",
-    layout="wide"
+    layout="wide",
+    page_icon="🏨"
 )
-
-# --------------------------------------------------
-# STYLE
-# --------------------------------------------------
-
-st.markdown("""
-<style>
-.main {background-color:#f4f6f8;}
-.metric-card {
-    background:white;
-    padding:20px;
-    border-radius:10px;
-    box-shadow:0px 2px 5px rgba(0,0,0,0.1);
-}
-</style>
-""", unsafe_allow_html=True)
 
 # --------------------------------------------------
 # HELPER FUNCTIONS
 # --------------------------------------------------
 
-def scrape_booking_rate(hotel_name):
-
-    search_query = f"{hotel_name} Washington DC"
-    url = f"https://www.booking.com/searchresults.html?ss={search_query.replace(' ', '+')}"
-
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
-
+def get_image_base64(image_path):
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-
-        soup = BeautifulSoup(response.text, "html.parser")
-
-        price = soup.find("span", {"data-testid": "price-and-discounted-price"})
-
-        if price:
-            return price.text
-        else:
-            return "Hidden"
-
+        img = Image.open(image_path)
+        buffered = BytesIO()
+        img.save(buffered, format="PNG")
+        return f"data:image/png;base64,{base64.b64encode(buffered.getvalue()).decode()}"
     except:
-        return "N/A"
+        return ""
 
+# --------------------------------------------------
+# STYLING
+# --------------------------------------------------
+
+st.markdown("""
+<style>
+.main { background-color:#f5f7f9; }
+.stMetric {
+    background-color:white;
+    padding:15px;
+    border-radius:10px;
+    box-shadow: 2px 2px 5px rgba(0,0,0,0.05);
+}
+.event-card {
+    padding:10px;
+    border-left:5px solid #ff4b4b;
+    background:white;
+    margin-bottom:8px;
+}
+</style>
+""", unsafe_allow_html=True)
 
 # --------------------------------------------------
 # LOAD DATA
 # --------------------------------------------------
 
-@st.cache_data(ttl=600)
+@st.cache_data
 def load_data():
 
-    # -------------------------
-    # Competitor Rates
-    # -------------------------
+    comp = pd.read_csv("competitor_rates.csv")
+    comp["Date"] = pd.to_datetime(comp["Date"])
 
-    try:
+    events = pd.read_csv("events_dc.csv")
+    events["Date"] = pd.to_datetime(events["Date"])
 
-        comp = pd.read_csv("competitor_rates.csv")
+    df = pd.read_csv("georgetown_inn_data.csv")
+    df.columns = df.columns.str.strip()
+    df["Date"] = pd.to_datetime(df["Date"])
 
-        comp["Date"] = pd.to_datetime(comp["Date"])
-        comp["Rate"] = pd.to_numeric(comp["Rate"], errors="coerce")
+    # Core Metrics
+    df["ADR"] = df["Room_Revenue"] / df["Rooms_Sold"]
+    df["Occupancy"] = df["Rooms_Sold"] / df["Total_Rooms"]
+    df["RevPAR"] = df["Room_Revenue"] / df["Total_Rooms"]
 
-        comp = comp.dropna()
+    df["MPI"] = (df["Occupancy"] / df["Market_Occ"]) * 100
+    df["RGI"] = (df["RevPAR"] / (df["Market_ADR"] * df["Market_Occ"])) * 100
 
-    except:
-
-        hotels = [
-            "Four Seasons DC",
-            "Ritz Carlton Georgetown",
-            "Rosewood DC",
-            "Fairmont DC",
-            "Park Hyatt DC"
-        ]
-
-        dates = pd.date_range(datetime.today(), periods=30)
-
-        rows = []
-
-        for hotel in hotels:
-            for d in dates:
-                rows.append({
-                    "Hotel": hotel,
-                    "Date": d,
-                    "Rate": np.random.randint(220, 480)
-                })
-
-        comp = pd.DataFrame(rows)
-
-    # -------------------------
-    # Events
-    # -------------------------
-
-    try:
-
-        events = pd.read_csv("events_dc.csv")
-
-        events["Date"] = pd.to_datetime(events["Date"])
-
-    except:
-
-        events = pd.DataFrame({
-            "Date":[
-                "2026-03-20",
-                "2026-04-05",
-                "2026-07-04"
-            ],
-            "Event":[
-                "Cherry Blossom Festival",
-                "Marathon Weekend",
-                "Independence Day"
-            ],
-            "Impact_Level":[
-                "High",
-                "Medium",
-                "High"
-            ]
-        })
-
-        events["Date"] = pd.to_datetime(events["Date"])
-
-    # -------------------------
-    # Internal Hotel Data
-    # -------------------------
-
-    try:
-
-        df = pd.read_csv("georgetown_inn_data.csv")
-
-        df["Date"] = pd.to_datetime(df["Date"])
-
-    except:
-
-        dates = pd.date_range(datetime.today(), periods=60)
-
-        df = pd.DataFrame({
-            "Date":dates,
-            "Occupancy":np.random.randint(65,95,len(dates)),
-            "ADR":np.random.randint(180,320,len(dates))
-        })
-
-        df["Revenue"] = df["Occupancy"] * df["ADR"]
-
-    return comp, events, df
+    return df, comp, events
 
 
-comp, events, hotel = load_data()
+df, comp, events = load_data()
+
+# --------------------------------------------------
+# SIDEBAR
+# --------------------------------------------------
+
+with st.sidebar:
+
+    pic = get_image_base64("asher_picture.png")
+
+    if pic:
+        st.markdown(
+            f'<img src="{pic}" style="border-radius:50%;width:140px;">',
+            unsafe_allow_html=True
+        )
+
+    st.markdown("### Asher Jannu")
+    st.markdown("Revenue Analyst")
+
+    st.markdown("---")
+
+    st.markdown("[View Code on GitHub](https://github.com/asherjc-creator/georgetown-revenue-dashboard)")
+
+    st.markdown("---")
+
+    start_date, end_date = st.date_input(
+        "Date Range",
+        [df["Date"].min(), df["Date"].max()]
+    )
+
+# --------------------------------------------------
+# FILTER DATA
+# --------------------------------------------------
+
+filtered = df[(df["Date"] >= pd.to_datetime(start_date)) &
+              (df["Date"] <= pd.to_datetime(end_date))]
+
+comp_filtered = comp[(comp["Date"] >= pd.to_datetime(start_date)) &
+                     (comp["Date"] <= pd.to_datetime(end_date))]
 
 # --------------------------------------------------
 # HEADER
 # --------------------------------------------------
 
-st.title("🏨 Georgetown Inn Revenue Intelligence Dashboard")
+logo = get_image_base64("logo.png")
 
-st.write("AI assisted pricing insights for Washington DC hotel market")
+if logo:
+    st.markdown(f"""
+    <div style="display:flex;align-items:center;gap:20px;">
+        <img src="{logo}" width="120">
+        <h1>Georgetown Inn Revenue Dashboard</h1>
+    </div>
+    """, unsafe_allow_html=True)
+else:
+    st.title("🏨 Georgetown Inn Revenue Dashboard")
 
 # --------------------------------------------------
 # KPI METRICS
 # --------------------------------------------------
 
-col1, col2, col3 = st.columns(3)
+c1, c2, c3, c4 = st.columns(4)
 
-avg_occ = round(hotel["Occupancy"].mean(),1)
-avg_adr = round(hotel["ADR"].mean(),0)
-avg_rev = round(hotel["Revenue"].mean(),0)
-
-with col1:
-    st.metric("Average Occupancy", f"{avg_occ}%")
-
-with col2:
-    st.metric("Average ADR", f"${avg_adr}")
-
-with col3:
-    st.metric("Average Daily Revenue", f"${avg_rev}")
+c1.metric("ADR", f"${filtered['ADR'].mean():.2f}")
+c2.metric("Occupancy", f"{filtered['Occupancy'].mean()*100:.1f}%")
+c3.metric("RevPAR", f"${filtered['RevPAR'].mean():.2f}")
+c4.metric("RGI", f"{filtered['RGI'].mean():.1f}")
 
 # --------------------------------------------------
-# OCCUPANCY TREND
+# REVENUE TREND
 # --------------------------------------------------
 
-st.subheader("Occupancy Trend")
+st.subheader("Revenue & RevPAR Trend")
 
-fig_occ = px.line(
-    hotel,
-    x="Date",
-    y="Occupancy",
-    markers=True
-)
-
-st.plotly_chart(fig_occ, use_container_width=True)
+fig = px.line(filtered, x="Date", y=["Room_Revenue","RevPAR"])
+st.plotly_chart(fig, use_container_width=True)
 
 # --------------------------------------------------
-# ADR TREND
+# MARKET SHARE
 # --------------------------------------------------
 
-st.subheader("ADR Trend")
+st.subheader("Market Penetration Index")
 
-fig_adr = px.line(
-    hotel,
-    x="Date",
-    y="ADR",
-    markers=True
-)
+fig2 = px.bar(filtered, x="Date", y="MPI", color="MPI",
+              color_continuous_scale="RdYlGn")
 
-st.plotly_chart(fig_adr, use_container_width=True)
+st.plotly_chart(fig2, use_container_width=True)
 
 # --------------------------------------------------
-# COMPETITOR RATE COMPARISON
+# COMPETITOR RATES
 # --------------------------------------------------
 
 st.subheader("Competitor Rate Comparison")
 
-fig_comp = px.line(
-    comp,
-    x="Date",
-    y="Rate",
-    color="Hotel"
+fig3 = px.line(comp_filtered, x="Date", y="Rate", color="Hotel")
+
+st.plotly_chart(fig3, use_container_width=True)
+
+# --------------------------------------------------
+# 90 DAY FORECAST
+# --------------------------------------------------
+
+st.subheader("90 Day ADR Forecast")
+
+last_date = df["Date"].max()
+
+future_dates = pd.date_range(last_date + timedelta(days=1), periods=90)
+
+avg_market = comp.groupby("Date")["Rate"].mean()
+
+forecast = pd.DataFrame({"Date": future_dates})
+forecast["Market_Trend"] = avg_market.reindex(future_dates).fillna(method="ffill").values
+
+forecast = forecast.merge(events, on="Date", how="left")
+forecast["Impact_Level"] = forecast["Impact_Level"].fillna("None")
+
+multipliers = {"High":1.25,"Medium":1.1,"Low":1.05,"None":1}
+
+forecast["Predicted_ADR"] = forecast.apply(
+    lambda x: x["Market_Trend"] * multipliers[x["Impact_Level"]],
+    axis=1
 )
 
-st.plotly_chart(fig_comp, use_container_width=True)
+fig4 = go.Figure()
 
-# --------------------------------------------------
-# EVENT DEMAND IMPACT
-# --------------------------------------------------
+fig4.add_trace(go.Scatter(
+    x=forecast["Date"],
+    y=forecast["Predicted_ADR"],
+    name="Predicted ADR"
+))
 
-st.subheader("Upcoming Demand Events")
+fig4.add_trace(go.Scatter(
+    x=forecast["Date"],
+    y=forecast["Market_Trend"],
+    name="Market Baseline",
+    line=dict(dash="dash")
+))
 
-impact_colors = {
-    "High":"🔴",
-    "Medium":"🟡",
-    "Low":"🟢"
-}
-
-for _, row in events.iterrows():
-
-    st.markdown(
-        f"{impact_colors.get(row['Impact_Level'],'⚪')} "
-        f"**{row['Event']}** — {row['Date'].date()} "
-        f"({row['Impact_Level']} Impact)"
-    )
-
-# --------------------------------------------------
-# REVENUE FORECAST
-# --------------------------------------------------
-
-st.subheader("Revenue Forecast")
-
-hotel["Forecast"] = hotel["Revenue"].rolling(7).mean()
-
-fig_forecast = go.Figure()
-
-fig_forecast.add_trace(
-    go.Scatter(
-        x=hotel["Date"],
-        y=hotel["Revenue"],
-        name="Actual Revenue"
-    )
-)
-
-fig_forecast.add_trace(
-    go.Scatter(
-        x=hotel["Date"],
-        y=hotel["Forecast"],
-        name="Forecast",
-        line=dict(dash="dash")
-    )
-)
-
-st.plotly_chart(fig_forecast, use_container_width=True)
-
-# --------------------------------------------------
-# RATE RECOMMENDATION ENGINE
-# --------------------------------------------------
-
-st.subheader("AI Rate Recommendation")
-
-latest_occ = hotel["Occupancy"].iloc[-1]
-latest_adr = hotel["ADR"].iloc[-1]
-
-if latest_occ > 90:
-    recommendation = latest_adr * 1.15
-elif latest_occ > 80:
-    recommendation = latest_adr * 1.08
-elif latest_occ > 70:
-    recommendation = latest_adr * 1.02
-else:
-    recommendation = latest_adr * 0.95
-
-st.success(f"Recommended ADR: **${round(recommendation)}**")
+st.plotly_chart(fig4, use_container_width=True)
 
 # --------------------------------------------------
 # COMPETITOR MAP
 # --------------------------------------------------
 
-st.subheader("Georgetown Competitor Map")
+st.subheader("Competitive Landscape")
 
-dc_map = folium.Map(
-    location=[38.9072, -77.0369],
-    zoom_start=13
-)
+m = folium.Map(location=[38.9055,-77.0620], zoom_start=15)
+
+folium.Marker(
+    [38.9055,-77.0620],
+    popup="Georgetown Inn",
+    icon=folium.Icon(color="blue")
+).add_to(m)
 
 competitors = [
-    ("Four Seasons DC",38.9047,-77.0537),
-    ("Ritz Carlton Georgetown",38.9101,-77.0608),
-    ("Rosewood DC",38.9104,-77.0580),
-    ("Park Hyatt DC",38.9108,-77.0437)
+("Four Seasons DC",[38.9052,-77.0581]),
+("Rosewood DC",[38.9045,-77.0625]),
+("Ritz Carlton Georgetown",[38.9031,-77.0615])
 ]
 
-heat_data = []
+for name,loc in competitors:
+    folium.CircleMarker(location=loc,radius=8,popup=name,color="red",fill=True).add_to(m)
 
-for name, lat, lon in competitors:
-
-    folium.Marker(
-        location=[lat,lon],
-        popup=name,
-        icon=folium.Icon(color="blue")
-    ).add_to(dc_map)
-
-    heat_data.append([lat,lon])
-
-HeatMap(heat_data).add_to(dc_map)
-
-st_folium(dc_map, width=700)
+st_folium(m,width=700,height=400)
 
 # --------------------------------------------------
-# LIVE COMPETITOR RATE CHECK
+# DEMAND HEATMAP
 # --------------------------------------------------
 
-st.subheader("Live Rate Check")
+st.subheader("Geographic Demand Heatmap")
 
-hotel_name = st.text_input("Enter competitor hotel")
+m2 = folium.Map(location=[38.9055,-77.0620], zoom_start=4)
 
-if st.button("Check Live Rate"):
+heat = df[["Lat","Lon"]].dropna().values.tolist()
 
-    rate = scrape_booking_rate(hotel_name)
+HeatMap(heat).add_to(m2)
 
-    st.info(f"Latest Rate: {rate}")
+st_folium(m2,width=700,height=400)
+
+# --------------------------------------------------
+# AI PRICING ENGINE
+# --------------------------------------------------
+
+st.subheader("AI Pricing Recommendation")
+
+latest_occ = df["Occupancy"].iloc[-1]
+latest_adr = df["ADR"].iloc[-1]
+
+if latest_occ > 0.9:
+    suggested = latest_adr * 1.15
+    st.success(f"High demand detected. Suggested ADR: ${suggested:.0f}")
+elif latest_occ > 0.75:
+    suggested = latest_adr * 1.05
+    st.info(f"Moderate demand. Suggested ADR: ${suggested:.0f}")
+else:
+    suggested = latest_adr * 0.92
+    st.warning(f"Low demand. Suggested ADR: ${suggested:.0f}")
+
+# --------------------------------------------------
+# UPCOMING EVENTS
+# --------------------------------------------------
+
+st.subheader("Upcoming High Impact Events")
+
+upcoming = events[events["Date"] >= last_date].sort_values("Date").head(5)
+
+for _,row in upcoming.iterrows():
+
+    st.markdown(f"""
+    <div class="event-card">
+    <b>{row['Date'].strftime('%b %d')}</b> — {row['Event']}<br>
+    Impact: {row['Impact_Level']}
+    </div>
+    """, unsafe_allow_html=True)

@@ -1,7 +1,6 @@
-streamlit
-pandas
-numpy
-plotly
-folium
-streamlit-folium
-Pillow
+# requirements-stable.txt
+pandas==2.0.3
+numpy==1.24.3
+plotly==5.15.0
+dash==2.14.0
+dash-bootstrap-components==1.5.0
